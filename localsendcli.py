@@ -1,6 +1,7 @@
 import os
 import sys
 import socket
+import ipaddress
 import json
 import argparse
 import http.server
@@ -20,7 +21,74 @@ except ImportError:
 PORT = 53317
 SERVICE_TYPE = "_pylocalsend._tcp.local."
 SHARE_DIR = "."
-ALREADY_DISCOVERED = {} # {id: (name, ip)}
+
+EXCLUDED_NETWORKS = [
+    ipaddress.ip_network('198.18.0.0/15'),   # Clash TUN / RFC 2544 benchmark
+    ipaddress.ip_network('100.64.0.0/10'),    # CGNAT / Tailscale
+    ipaddress.ip_network('172.17.0.0/16'),    # Docker default bridge
+    ipaddress.ip_network('172.18.0.0/16'),    # Docker user-defined
+]
+
+EXCLUDED_IFACE_PREFIXES = (
+    'lo', 'docker', 'br-', 'veth', 'virbr',
+    'tun', 'tap', 'utun', 'wg', 'tailscale',
+    'vmnet', 'vboxnet',
+)
+
+def get_local_ips():
+    """Enumerate all local IPv4 addresses, filtering out virtual/VPN interfaces.
+    Returns a list of (interface_name, ip_string) or just ip_strings."""
+    candidates = []
+
+    # Method 1: netifaces (most reliable, gives interface names)
+    try:
+        import netifaces
+        for iface in netifaces.interfaces():
+            if iface.lower().startswith(EXCLUDED_IFACE_PREFIXES):
+                continue
+            addrs = netifaces.ifaddresses(iface)
+            if netifaces.AF_INET in addrs:
+                for addr in addrs[netifaces.AF_INET]:
+                    candidates.append(addr['addr'])
+    except ImportError:
+        # Method 2: socket.getaddrinfo + UDP probe (no extra deps)
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                candidates.append(info[4][0])
+        except socket.gaierror:
+            pass
+        for target in ['10.255.255.255', '192.168.255.255', '172.31.255.255']:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.settimeout(0)
+                s.connect((target, 1))
+                candidates.append(s.getsockname()[0])
+                s.close()
+            except Exception:
+                pass
+
+    seen = set()
+    filtered = []
+    for ip_str in candidates:
+        if ip_str in seen:
+            continue
+        seen.add(ip_str)
+        ip = ipaddress.ip_address(ip_str)
+        if ip.is_loopback or ip.is_link_local:
+            continue
+        if any(ip in net for net in EXCLUDED_NETWORKS):
+            continue
+        if ip.is_private:
+            filtered.append(ip_str)
+    return filtered
+
+def pick_best_ip(ips):
+    """Prefer common LAN ranges: 192.168.x > 10.x > 172.x > first available."""
+    for prefix in ['192.168.', '10.', '172.']:
+        for ip in ips:
+            if ip.startswith(prefix):
+                return ip
+    return ips[0] if ips else '127.0.0.1'
 
 class FileServerHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -95,10 +163,20 @@ class DiscoveryListener:
 
     def add_service(self, zeroconf, type, name):
         info = zeroconf.get_service_info(type, name)
-        if info:
-            ip = socket.inet_ntoa(info.addresses[0])
+        if info and info.addresses:
+            all_addrs = [socket.inet_ntoa(a) for a in info.addresses]
+            valid = []
+            for addr in all_addrs:
+                ip = ipaddress.ip_address(addr)
+                if ip.is_loopback or ip.is_link_local:
+                    continue
+                if any(ip in net for net in EXCLUDED_NETWORKS):
+                    continue
+                if ip.is_private:
+                    valid.append(addr)
+            best = pick_best_ip(valid) if valid else all_addrs[0]
             alias = name.split('.')[0]
-            self.devices[alias] = ip
+            self.devices[alias] = best
 
     def remove_service(self, zeroconf, type, name):
         pass
@@ -125,27 +203,22 @@ class LocalSendShell(cmd.Cmd):
             self.register_self()
 
     def register_self(self):
-        ip = self.get_ip()
+        all_ips = get_local_ips()
+        if not all_ips:
+            all_ips = [self.get_ip()]
         hostname = socket.gethostname()
         info = ServiceInfo(
             SERVICE_TYPE,
             f"{hostname}.{SERVICE_TYPE}",
-            addresses=[socket.inet_aton(ip)],
+            addresses=[socket.inet_aton(ip) for ip in all_ips],
             port=self.port,
             properties={'alias': hostname}
         )
         self.zc.register_service(info)
 
     def get_ip(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(('10.255.255.255', 1))
-            IP = s.getsockname()[0]
-        except Exception:
-            IP = '127.0.0.1'
-        finally:
-            s.close()
-        return IP
+        ips = get_local_ips()
+        return pick_best_ip(ips)
 
     def do_scan(self, arg):
         '''Scan for PyLocalSend devices on the local network via mDNS.
@@ -299,10 +372,14 @@ Usage:  status
 
 Example:
   (pylocalsend) status
-  [*] IP: 192.168.1.5
+  [*] Active IP: 192.168.1.5
+  [*] All LAN IPs: 192.168.1.5, 10.0.0.2
   [*] Port: 53317
   [*] Sharing Directory: /home/user/shared'''
-        print(f"[*] IP: {self.get_ip()}")
+        all_ips = get_local_ips()
+        print(f"[*] Active IP: {pick_best_ip(all_ips)}")
+        if all_ips:
+            print(f"[*] All LAN IPs: {', '.join(all_ips)}")
         print(f"[*] Port: {self.port}")
         print(f"[*] Sharing Directory: {os.path.abspath(self.share_dir)}")
 
