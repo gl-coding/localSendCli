@@ -58,7 +58,11 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urlparse(self.path)
         path = unquote(parsed_path.path)
-        content_length = int(self.headers['Content-Length'])
+        raw_length = self.headers.get('Content-Length')
+        if raw_length is None:
+            self.send_error(411, "Content-Length required")
+            return
+        content_length = int(raw_length)
         post_data = self.rfile.read(content_length)
 
         if path == "/message":
@@ -249,8 +253,9 @@ Examples:
         print(f"[*] Pushing {filename} to {target_ip}...")
         try:
             with open(file_path, 'rb') as f:
-                headers = {'X-File-Name': filename}
-                response = requests.post(f"http://{target_ip}:{self.port}/", data=f, headers=headers)
+                file_data = f.read()
+            headers = {'X-File-Name': filename}
+            response = requests.post(f"http://{target_ip}:{self.port}/", data=file_data, headers=headers)
             if response.status_code == 200: print("[+] Success!")
             else: print(f"[-] Failed: {response.status_code}")
         except Exception as e:
