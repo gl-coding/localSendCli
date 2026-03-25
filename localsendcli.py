@@ -56,20 +56,34 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(404, "File not found")
 
     def do_POST(self):
+        parsed_path = urlparse(self.path)
+        path = unquote(parsed_path.path)
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
-        filename = self.headers.get('X-File-Name', 'received_file')
-        save_path = os.path.join(SHARE_DIR, filename)
-        
-        try:
-            with open(save_path, 'wb') as f:
-                f.write(post_data)
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'OK')
-            print(f"\n[+] Automatically received pushed file: {filename}")
-        except Exception as e:
-            self.send_error(500, str(e))
+
+        if path == "/message":
+            try:
+                msg = json.loads(post_data.decode('utf-8'))
+                sender = msg.get('sender', 'unknown')
+                text = msg.get('text', '')
+                print(f"\n[MSG] from {sender}: {text}")
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'OK')
+            except Exception as e:
+                self.send_error(400, str(e))
+        else:
+            filename = self.headers.get('X-File-Name', 'received_file')
+            save_path = os.path.join(SHARE_DIR, filename)
+            try:
+                with open(save_path, 'wb') as f:
+                    f.write(post_data)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'OK')
+                print(f"\n[+] Automatically received pushed file: {filename}")
+            except Exception as e:
+                self.send_error(500, str(e))
 
 class DiscoveryListener:
     def __init__(self):
@@ -82,9 +96,18 @@ class DiscoveryListener:
             alias = name.split('.')[0]
             self.devices[alias] = ip
 
+    def remove_service(self, zeroconf, type, name):
+        pass
+
+    def update_service(self, zeroconf, type, name):
+        pass
+
 class LocalSendShell(cmd.Cmd):
     intro = 'Welcome to PyLocalSend. Type help or ? to list commands.\n'
     prompt = '(pylocalsend) '
+
+    def emptyline(self):
+        pass
 
     def __init__(self, port, share_dir):
         super().__init__()
@@ -119,7 +142,16 @@ class LocalSendShell(cmd.Cmd):
         return IP
 
     def do_scan(self, arg):
-        '''Scan for devices in the local network'''
+        '''Scan for PyLocalSend devices on the local network via mDNS.
+Discovered devices are assigned numeric IDs for use with other commands.
+
+Usage:  scan
+
+Example:
+  (pylocalsend) scan
+  [+] Discovered devices:
+    [1] MacBook-Pro (192.168.1.10)
+    [2] Ubuntu-PC (192.168.1.20)'''
         if not self.zc:
             print("Error: zeroconf not available")
             return
@@ -145,7 +177,14 @@ class LocalSendShell(cmd.Cmd):
         return target
 
     def do_list(self, arg):
-        '''List files on a remote device: list <ID_or_IP>'''
+        '''List shared files on a remote device.
+The target can be a device ID from scan results or a direct IP address.
+
+Usage:  list <ID_or_IP>
+
+Examples:
+  (pylocalsend) list 1
+  (pylocalsend) list 192.168.1.10'''
         if not arg:
             print("Usage: list <ID_or_IP>")
             return
@@ -162,7 +201,14 @@ class LocalSendShell(cmd.Cmd):
             print(f"[-] Error: {e}")
 
     def do_pull(self, arg):
-        '''Download a file from a remote device: pull <filename> <ID_or_IP>'''
+        '''Download a file from a remote device to the current directory.
+Use "list" first to see available files on the remote device.
+
+Usage:  pull <filename> <ID_or_IP>
+
+Examples:
+  (pylocalsend) pull report.pdf 1
+  (pylocalsend) pull photo.jpg 192.168.1.10'''
         parts = arg.split(maxsplit=1)
         if len(parts) < 2:
             print("Usage: pull <filename> <ID_or_IP>")
@@ -182,7 +228,14 @@ class LocalSendShell(cmd.Cmd):
             print(f"[-] Error: {e}")
 
     def do_push(self, arg):
-        '''Push a file to a remote device: push <local_path> <ID_or_IP>'''
+        '''Push a local file to a remote device.
+The file will be saved in the remote device's shared directory.
+
+Usage:  push <local_path> <ID_or_IP>
+
+Examples:
+  (pylocalsend) push ./notes.txt 1
+  (pylocalsend) push /home/user/photo.jpg 192.168.1.10'''
         parts = arg.split(maxsplit=1)
         if len(parts) < 2:
             print("Usage: push <local_path> <ID_or_IP>")
@@ -203,14 +256,58 @@ class LocalSendShell(cmd.Cmd):
         except Exception as e:
             print(f"[-] Error: {e}")
 
+    def do_msg(self, arg):
+        '''Send a text message to a remote device.
+
+Usage:  msg <ID_or_IP> <message>
+
+Examples:
+  (pylocalsend) msg 1 Hello, are you there?
+  (pylocalsend) msg 192.168.1.10 File is ready for download'''
+        parts = arg.split(maxsplit=1)
+        if len(parts) < 2:
+            print("Usage: msg <ID_or_IP> <message>")
+            return
+        target, text = parts[0], parts[1]
+        target_ip = self._resolve_ip(target)
+        payload = json.dumps({'sender': socket.gethostname(), 'text': text})
+        try:
+            response = requests.post(
+                f"http://{target_ip}:{self.port}/message",
+                data=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=5
+            )
+            if response.status_code == 200:
+                print("[+] Message sent!")
+            else:
+                print(f"[-] Failed: {response.status_code}")
+        except Exception as e:
+            print(f"[-] Error: {e}")
+
     def do_status(self, arg):
-        '''Show current server status'''
+        '''Show current server status including IP, port, and shared directory.
+
+Usage:  status
+
+Example:
+  (pylocalsend) status
+  [*] IP: 192.168.1.5
+  [*] Port: 53317
+  [*] Sharing Directory: /home/user/shared'''
         print(f"[*] IP: {self.get_ip()}")
         print(f"[*] Port: {self.port}")
         print(f"[*] Sharing Directory: {os.path.abspath(self.share_dir)}")
 
     def do_setdir(self, arg):
-        '''Update the local shared directory: setdir <path>'''
+        '''Change the local shared directory for serving and receiving files.
+If the directory does not exist, it will be created automatically.
+
+Usage:  setdir <path>
+
+Examples:
+  (pylocalsend) setdir ~/Downloads
+  (pylocalsend) setdir /tmp/shared'''
         if not arg:
             print("Usage: setdir <path>")
             return
@@ -233,7 +330,16 @@ class LocalSendShell(cmd.Cmd):
         print(f"[+] Shared directory updated to: {os.path.abspath(new_dir)}")
 
     def do_ls(self, arg):
-        '''List files in the local shared directory'''
+        '''List all files in the local shared directory.
+These are the files that other devices can see and download.
+
+Usage:  ls
+
+Example:
+  (pylocalsend) ls
+  [*] Local files in /home/user/shared:
+    - report.pdf
+    - photo.jpg'''
         print(f"[*] Local files in {os.path.abspath(self.share_dir)}:")
         try:
             files = [f for f in os.listdir(self.share_dir) if os.path.isfile(os.path.join(self.share_dir, f))]
@@ -245,10 +351,15 @@ class LocalSendShell(cmd.Cmd):
             print(f"[-] Error listing files: {e}")
 
     def do_exit(self, arg):
-        '''Exit the application'''
+        '''Exit PyLocalSend and stop the file sharing server.
+
+Usage:  exit / Ctrl+D'''
+        print()
         if self.zc:
             self.zc.close()
         return True
+
+    do_EOF = do_exit
 
 def start_background_server(port, share_dir):
     global SHARE_DIR
