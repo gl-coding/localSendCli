@@ -25,7 +25,7 @@ pip install zeroconf requests
 Run the tool on any two machines in the same network:
 
 ```bash
-python3 localsend_cli.py --dir ./my_shared_files
+python3 localsendcli.py --dir ./my_shared_files
 ```
 
 ### Common Commands
@@ -45,4 +45,4 @@ Once inside the `(pylocalsend)` prompt:
 
 ## 🤝 Contribution
 
-Feel free to customize `localsend_cli.py` for your own workflows!
+Feel free to customize `localsendcli.py` for your own workflows!
