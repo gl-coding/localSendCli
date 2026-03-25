@@ -18,6 +18,7 @@ try:
 except ImportError:
     Zeroconf = None
 
+CHUNK_SIZE = 65536
 PORT = 53317
 SERVICE_TYPE = "_pylocalsend._tcp.local."
 SHARE_DIR = "."
@@ -82,6 +83,26 @@ def get_local_ips():
             filtered.append(ip_str)
     return filtered
 
+def format_size(size):
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"
+
+def print_progress(transferred, total, start_time):
+    elapsed = time.time() - start_time
+    speed = transferred / elapsed if elapsed > 0 else 0
+    if total > 0:
+        pct = transferred / total * 100
+        bar_len = 30
+        filled = int(bar_len * transferred // total)
+        bar = '█' * filled + '░' * (bar_len - filled)
+        sys.stdout.write(f"\r  {bar} {pct:5.1f}%  {format_size(transferred)}/{format_size(total)}  {format_size(speed)}/s")
+    else:
+        sys.stdout.write(f"\r  {format_size(transferred)} sent  {format_size(speed)}/s")
+    sys.stdout.flush()
+
 def pick_best_ip(ips):
     """Prefer common LAN ranges: 192.168.x > 10.x > 172.x > first available."""
     for prefix in ['192.168.', '10.', '172.']:
@@ -139,6 +160,8 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
                 sender = msg.get('sender', 'unknown')
                 text = msg.get('text', '')
                 print(f"\n[MSG] from {sender}: {text}")
+                sys.stdout.write("(pylocalsend) ")
+                sys.stdout.flush()
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b'OK')
@@ -154,6 +177,8 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b'OK')
                 print(f"\n[+] Automatically received pushed file: {filename}")
+                sys.stdout.write("(pylocalsend) ")
+                sys.stdout.flush()
             except Exception as e:
                 self.send_error(500, str(e))
 
@@ -298,9 +323,15 @@ Examples:
         try:
             response = self.session.get(f"http://{target_ip}:{self.port}/download/{filename}", stream=True)
             if response.status_code == 200:
+                total = int(response.headers.get('Content-Length', 0))
+                transferred = 0
+                start_time = time.time()
                 with open(filename, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
-                print(f"[+] Downloaded to current directory.")
+                    for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                        f.write(chunk)
+                        transferred += len(chunk)
+                        print_progress(transferred, total, start_time)
+                print(f"\n[+] Downloaded to current directory.")
             else:
                 print(f"[-] Download failed: {response.status_code}")
         except Exception as e:
@@ -325,16 +356,28 @@ Examples:
             print(f"[-] File {file_path} not found.")
             return
         filename = os.path.basename(file_path)
-        print(f"[*] Pushing {filename} to {target_ip}...")
+        file_size = os.path.getsize(file_path)
+        print(f"[*] Pushing {filename} ({format_size(file_size)}) to {target_ip}...")
         try:
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-            headers = {'X-File-Name': filename}
-            response = self.session.post(f"http://{target_ip}:{self.port}/", data=file_data, headers=headers)
-            if response.status_code == 200: print("[+] Success!")
-            else: print(f"[-] Failed: {response.status_code}")
+            def upload_gen():
+                transferred = 0
+                start_time = time.time()
+                with open(file_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        transferred += len(chunk)
+                        print_progress(transferred, file_size, start_time)
+                        yield chunk
+            headers = {'X-File-Name': filename, 'Content-Length': str(file_size)}
+            response = self.session.post(f"http://{target_ip}:{self.port}/", data=upload_gen(), headers=headers)
+            if response.status_code == 200:
+                print("\n[+] Success!")
+            else:
+                print(f"\n[-] Failed: {response.status_code}")
         except Exception as e:
-            print(f"[-] Error: {e}")
+            print(f"\n[-] Error: {e}")
 
     def do_msg(self, arg):
         '''Send a text message to a remote device.
