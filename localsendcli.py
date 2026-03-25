@@ -118,6 +118,8 @@ class LocalSendShell(cmd.Cmd):
         self.port = port
         self.share_dir = share_dir
         self.discovered = {} # {id: (name, ip)}
+        self.session = requests.Session()
+        self.session.trust_env = False
         self.zc = Zeroconf() if Zeroconf else None
         if self.zc:
             self.register_self()
@@ -194,7 +196,7 @@ Examples:
             return
         target_ip = self._resolve_ip(arg)
         try:
-            response = requests.get(f"http://{target_ip}:{self.port}/list", timeout=5)
+            response = self.session.get(f"http://{target_ip}:{self.port}/list", timeout=5)
             if response.status_code == 200:
                 files = response.json()
                 print(f"[*] Files on {target_ip}:")
@@ -221,7 +223,7 @@ Examples:
         target_ip = self._resolve_ip(target)
         print(f"[*] Pulling {filename} from {target_ip}...")
         try:
-            response = requests.get(f"http://{target_ip}:{self.port}/download/{filename}", stream=True)
+            response = self.session.get(f"http://{target_ip}:{self.port}/download/{filename}", stream=True)
             if response.status_code == 200:
                 with open(filename, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
@@ -255,7 +257,7 @@ Examples:
             with open(file_path, 'rb') as f:
                 file_data = f.read()
             headers = {'X-File-Name': filename}
-            response = requests.post(f"http://{target_ip}:{self.port}/", data=file_data, headers=headers)
+            response = self.session.post(f"http://{target_ip}:{self.port}/", data=file_data, headers=headers)
             if response.status_code == 200: print("[+] Success!")
             else: print(f"[-] Failed: {response.status_code}")
         except Exception as e:
@@ -277,7 +279,7 @@ Examples:
         target_ip = self._resolve_ip(target)
         payload = json.dumps({'sender': socket.gethostname(), 'text': text})
         try:
-            response = requests.post(
+            response = self.session.post(
                 f"http://{target_ip}:{self.port}/message",
                 data=payload,
                 headers={'Content-Type': 'application/json'},
