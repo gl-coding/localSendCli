@@ -111,6 +111,36 @@ def pick_best_ip(ips):
                 return ip
     return ips[0] if ips else '127.0.0.1'
 
+class ProgressFileReader:
+    """File-like wrapper that displays upload progress.
+    requests treats this as a regular file object (no chunked encoding)."""
+    def __init__(self, path, total):
+        self._file = open(path, 'rb')
+        self._total = total
+        self._transferred = 0
+        self._start = time.time()
+
+    def read(self, size=-1):
+        chunk = self._file.read(size)
+        if chunk:
+            self._transferred += len(chunk)
+            print_progress(self._transferred, self._total, self._start)
+        return chunk
+
+    def __len__(self):
+        return self._total
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        chunk = self._file.read(CHUNK_SIZE)
+        if not chunk:
+            raise StopIteration
+        self._transferred += len(chunk)
+        print_progress(self._transferred, self._total, self._start)
+        return chunk
+
 class FileServerHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Override to prevent logging every request to stdout
@@ -359,19 +389,9 @@ Examples:
         file_size = os.path.getsize(file_path)
         print(f"[*] Pushing {filename} ({format_size(file_size)}) to {target_ip}...")
         try:
-            def upload_gen():
-                transferred = 0
-                start_time = time.time()
-                with open(file_path, 'rb') as f:
-                    while True:
-                        chunk = f.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        transferred += len(chunk)
-                        print_progress(transferred, file_size, start_time)
-                        yield chunk
+            wrapped = ProgressFileReader(file_path, file_size)
             headers = {'X-File-Name': filename, 'Content-Length': str(file_size)}
-            response = self.session.post(f"http://{target_ip}:{self.port}/", data=upload_gen(), headers=headers)
+            response = self.session.post(f"http://{target_ip}:{self.port}/", data=wrapped, headers=headers)
             if response.status_code == 200:
                 print("\n[+] Success!")
             else:
