@@ -165,12 +165,17 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
             filename = path[len("/download/"):]
             file_path = os.path.join(SHARE_DIR, filename)
             if os.path.abspath(file_path).startswith(os.path.abspath(SHARE_DIR)) and os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/octet-stream')
-                self.send_header('Content-Length', str(os.path.getsize(file_path)))
+                self.send_header('Content-Length', str(file_size))
                 self.end_headers()
                 with open(file_path, 'rb') as f:
-                    self.wfile.write(f.read())
+                    while True:
+                        chunk = f.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
             else:
                 self.send_error(404, "File not found")
 
@@ -182,9 +187,9 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(411, "Content-Length required")
             return
         content_length = int(raw_length)
-        post_data = self.rfile.read(content_length)
 
         if path == "/message":
+            post_data = self.rfile.read(content_length)
             try:
                 msg = json.loads(post_data.decode('utf-8'))
                 sender = msg.get('sender', 'unknown')
@@ -201,12 +206,21 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
             filename = self.headers.get('X-File-Name', 'received_file')
             save_path = os.path.join(SHARE_DIR, filename)
             try:
+                received = 0
+                start_time = time.time()
                 with open(save_path, 'wb') as f:
-                    f.write(post_data)
+                    while received < content_length:
+                        to_read = min(CHUNK_SIZE, content_length - received)
+                        chunk = self.rfile.read(to_read)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        received += len(chunk)
+                        print_progress(received, content_length, start_time)
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b'OK')
-                print(f"\n[+] Automatically received pushed file: {filename}")
+                print(f"\n[+] Received file: {filename} ({format_size(content_length)})")
                 sys.stdout.write("(pylocalsend) ")
                 sys.stdout.flush()
             except Exception as e:
