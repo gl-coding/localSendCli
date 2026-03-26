@@ -18,7 +18,7 @@ try:
 except ImportError:
     Zeroconf = None
 
-CHUNK_SIZE = 65536
+CHUNK_SIZE = 1048576
 PORT = 53317
 SERVICE_TYPE = "_pylocalsend._tcp.local."
 SHARE_DIR = "."
@@ -142,9 +142,16 @@ class ProgressFileReader:
         return chunk
 
 class FileServerHandler(http.server.BaseHTTPRequestHandler):
+    rbufsize = CHUNK_SIZE
+    wbufsize = CHUNK_SIZE
+
     def log_message(self, format, *args):
-        # Override to prevent logging every request to stdout
         pass
+
+    def setup(self):
+        super().setup()
+        self.request.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * CHUNK_SIZE)
+        self.request.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * CHUNK_SIZE)
 
     def do_GET(self):
         parsed_path = urlparse(self.path)
@@ -170,12 +177,9 @@ class FileServerHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/octet-stream')
                 self.send_header('Content-Length', str(file_size))
                 self.end_headers()
+                self.wfile.flush()
                 with open(file_path, 'rb') as f:
-                    while True:
-                        chunk = f.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
+                    self.request.sendfile(f)
             else:
                 self.send_error(404, "File not found")
 
@@ -555,8 +559,8 @@ Usage:  exit / Ctrl+D'''
 def start_background_server(port, share_dir):
     global SHARE_DIR
     SHARE_DIR = share_dir
-    socketserver.TCPServer.allow_reuse_address = True
-    httpd = socketserver.TCPServer(("", port), FileServerHandler)
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    httpd = socketserver.ThreadingTCPServer(("", port), FileServerHandler)
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     server_thread.start()
     return httpd
