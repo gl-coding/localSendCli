@@ -12,23 +12,49 @@ A lightweight Python command-line tool for sharing files over a local network, i
 - **Smart Networking** — Automatically filters out VPN/Docker/TUN virtual interfaces and selects the real LAN IP; bypasses system proxy
 - **Cross-Platform** — Works on macOS, Ubuntu, and other Linux distributions
 
-## File Structure
+## Project Structure
 
 ```
-localsendcli.py      # Main program (single source file)
-requirements.txt     # Python dependencies
-README.md            # This file
+pylocalsend/
+  __init__.py          # Package version
+  cli.py               # Main program
+pyproject.toml         # Package metadata and build config
+requirements.txt       # Dependencies (for development)
+LICENSE                # MIT License
+README.md              # This file
 ```
 
 ## Installation
 
 Requires **Python 3.7+**.
 
+### From PyPI
+
 ```bash
-pip install -r requirements.txt
+pip install pylocalsend
 ```
 
-Dependency details:
+With all optional dependencies:
+
+```bash
+pip install pylocalsend[all]
+```
+
+### From Source
+
+```bash
+git clone https://github.com/guolei/pylocalsend.git
+cd pylocalsend
+pip install .
+```
+
+Or install in development mode:
+
+```bash
+pip install -e .
+```
+
+### Dependencies
 
 | Package | Required | Purpose |
 |---------|----------|---------|
@@ -36,22 +62,34 @@ Dependency details:
 | `zeroconf` | Optional | mDNS device discovery (scan command); without it, you can still use IP addresses directly |
 | `netifaces` | Optional | Accurate network interface enumeration and virtual adapter filtering; falls back to socket-based detection if not installed |
 
-Minimal installation: `pip install requests`
+Optional dependency groups:
+
+```bash
+pip install pylocalsend[discovery]    # + zeroconf
+pip install pylocalsend[network]      # + netifaces
+pip install pylocalsend[all]          # + zeroconf + netifaces
+```
 
 ## Usage
 
 ### Starting
 
-Run on two machines within the same local network:
+After installation, run on two machines within the same local network:
 
 ```bash
-python3 localsendcli.py
+pylocalsend
+```
+
+Or run directly without installation:
+
+```bash
+python3 -m pylocalsend.cli
 ```
 
 Optional arguments:
 
 ```bash
-python3 localsendcli.py --dir ./shared_files --port 53317
+pylocalsend --dir ./shared_files --port 53317
 ```
 
 | Argument | Default | Description |
@@ -81,7 +119,7 @@ Once inside the `(pylocalsend)` prompt:
 ### Example Session
 
 ```
-$ python3 localsendcli.py --dir ./shared
+$ pylocalsend --dir ./shared
 [*] Initializing PyLocalSend with shared directory: /home/user/shared
 Welcome to PyLocalSend. Type help or ? to list commands.
 
@@ -114,3 +152,7 @@ Welcome to PyLocalSend. Type help or ? to list commands.
 - Both devices must be on the same local network
 - Firewall must allow TCP port 53317 (UDP 53317 for mDNS discovery)
 - AP isolation (client isolation) must be disabled on the router
+
+## License
+
+[MIT](LICENSE)
