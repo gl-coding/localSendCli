@@ -1,3 +1,6 @@
+#!/bin/bash
+
+function server() {
 python3 -c "
 import socket
 s = socket.socket()
@@ -19,3 +22,19 @@ print(f'{total/1024/1024:.1f}MB in {elapsed:.1f}s = {total/elapsed/1024/1024:.1f
 c.close()
 s.close()
 "
+}
+
+function client() {     
+python3 -c "
+import socket, time
+s = socket.socket()
+s.connect(('192.168.1.15', 9999))
+data = b'x' * 1048576
+start = time.time()
+for _ in range(100):  # send 100MB
+  s.sendall(data)
+elapsed = time.time() - start
+print(f'100MB in {elapsed:.1f}s = {100/elapsed:.1f}MB/s')
+s.close()
+"
+}
